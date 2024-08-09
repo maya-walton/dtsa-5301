@@ -1,0 +1,273 @@
+---
+title: "NYPD_Shooting_report"
+author: "M.Walton"
+date: "2024-07-25"
+output: html_document
+---
+
+This project requires libraries tidyverse, lubiridate, knitr, and mapview to function properly.
+
+This project will be a comprehensive summary of my entry level analysis of NYPD shooting data. This dataset describes all (that we know of) shootings in NYC going back from 2006 until 2023. Additional information including a data dictionary can be found at this website: https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic.
+
+
+We're going to start out with a spacial map representation of the shootings around NYC. All of the packages needed are shown below. These will be required for this analysis.
+```{r inmport_data}
+
+library(tidyverse)
+library(lubridate)
+library(knitr)
+library(mapview)
+
+shooting_df <- read.csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+
+population_df <- read.csv("https://data.cityofnewyork.us/api/views/xywu-7bv9/rows.csv?accessType=DOWNLOAD")
+
+
+```
+
+I feel like the first step in any good data science project is visualizing what the data currently looks like. We actually have longitudinal and latitudinal data, so I figured our first visualization could be a map of the shootings. 
+
+```{r map_view}
+shooting_df_show <- shooting_df %>% filter(!(is.na(Latitude)))
+
+mapview(shooting_df_show, xcol = "Longitude", ycol = "Latitude", crs = 4269, grid = FALSE)
+
+```
+
+## Data Cleaning
+
+My next step, and most important step, is to clean the data; change column types ect. Of note, there are quite a few blanks. I will focus on location and time data related to shootings and deaths for this analysis. Of note, there are quite a few blanks/nulls in this table. I will deal with them as they come up. I have included a short snippet of the final table. 
+
+
+```{r clean_data, message = FALSE}
+shooting_df$OCCUR_DATE <- as.Date(shooting_df$OCCUR_DATE, "%m/%d/%Y")
+
+
+shooting_df <- shooting_df %>% mutate_at(vars(c(BORO:VIC_RACE)), factor)
+shooting_df$INCIDENT_KEY <- as.character(shooting_df$INCIDENT_KEY)
+shooting_df <- shooting_df %>% select(c(INCIDENT_KEY:VIC_RACE))
+shooting_df <- shooting_df %>% mutate(year_ceiling = case_when(format(OCCUR_DATE, "%Y") <= 2010 ~ 2010, format(OCCUR_DATE, "%Y") > 2020 ~ 2030, format(OCCUR_DATE, "%Y") > 2010 & format(OCCUR_DATE, "%Y") <= 2020 ~ 2020))
+shooting_df <- shooting_df %>% unite("boro_year", c(BORO, year_ceiling), sep = " ", na.rm = TRUE, remove = FALSE)
+
+population_df <- population_df %>% mutate(across(where(is.character), str_trim))
+population_df <- population_df[,c(2,3,5,7,9,11,13,15,17,19)]
+population_df <- population_df %>% pivot_longer(cols = -c(Borough), names_to = "Year", values_to = "Population") %>% rename(BORO = Borough )
+population_df$Year <- format(as.Date(population_df$Year, "X%Y"), "%Y")
+population_df$BORO <- toupper(population_df$BORO)
+population_df <- population_df %>% unite("boro_year", c(BORO, Year), sep = " ", na.rm = TRUE, remove = FALSE)
+
+
+shooting_df <- shooting_df %>% left_join(population_df, by = "boro_year") %>% rename(BORO = BORO.x)
+
+```
+
+```{r print table, echo=FALSE}
+
+kable(head(shooting_df[1:8]))
+kable(head(shooting_df[9:16]))
+
+```
+
+
+## Data Question - Where am I most likely to get shot in NYC and where am I most likely to die?
+
+Firstly, I would like to see where I am most likely to get shot. I am going to look at breaking down the shooting information by borough. So we will first look at a simple bar chart showing the number of shootings per borough. 
+```{r shootings_per_borrough, message = FALSE}
+shootings_per_borough <- shooting_df %>% group_by(BORO) %>% summarize(shooting_count = n())
+
+shootings_per_borough %>% ggplot(aes(x=BORO, y = shooting_count)) + 
+                                geom_bar(stat = "identity", fill = "darkorchid4") +
+                                labs(title = "Shootings per Borough",
+                                     y = "Number of Shootings",
+                                     x = "Date") + theme_bw(base_size = 15)
+
+```
+
+
+
+So it looks like Brooklyn has the highest number of shootings with Bronx as a close second. But lets add in population dynamics, because they're important. Two places can have the same amounts of shootings, but if one place has way less people, then they have a higher shooting percentage and is less safe. 
+
+```{r shootings_per_population}
+shooting_per_borough_population <- shooting_df %>% 
+  group_by(BORO) %>%
+  summarize(shooting_count = n(), population_avg = mean(Population)) %>%
+  mutate(shootings_per_pop = shooting_count * 1000000/population_avg) %>%
+  ungroup()
+
+shootings_per_borough <- shootings_per_borough %>% left_join(shooting_per_borough_population)
+  
+
+shootings_per_borough %>% ggplot(aes(x=BORO, y = shooting_count)) + 
+                                geom_bar(stat = "identity", fill = "darkorchid4")+
+                                geom_point(aes(x = BORO, y = shootings_per_pop), color = "red", size = 6) +
+                                labs(title = "Shootings per 100,000 People",
+                                     y = "Number of Shootings",
+                                     x = "Date") + theme_bw(base_size = 15)
+
+
+```
+
+
+
+
+Lets look at some bar charts over time per borough. I want to see if maybe the excess shootings are due to an outlier time period where the number of shootings was way up or is there just a steady amount of shootings in Brooklyn that is higher than the other boroughs.
+
+```{r shootings_per_borrough_over_time, message = FALSE}
+
+
+shootings_per_date <- shooting_df %>% group_by(OCCUR_DATE, BORO) %>% summarize(shooting_count = n())
+
+shootings_per_date %>%  ggplot(aes(x=OCCUR_DATE, y = shooting_count)) + 
+                                geom_line(stat = "identity", color = "blue") +
+                                facet_wrap(~BORO, ncol = 3) +
+                                labs(title = "Shootings over Time",
+                                     y = "Number of Shootings",
+                                     x = "Date") 
+```
+
+
+Wow. So we are able to see that the latter was true. There has been a steady amount of shootings in Brooklyn, and also Bronx, that surpasses the other boroughs. So just finishing out our evaluation of where I am most likely to get shot, there is a column that contains the location of the shooting, so let's look at which location has the highest count of shootings. Keeping in mind that this column does contain quite a few blank or na values for whatever reason. So i'm going to work with just the data that is actually provided. Given that I am in Brooklyn or Bronx, here are the top 5 places I could get shot at with the percentage of shootings that occur at those places.
+
+```{r shootings_per_location, message = FALSE}
+shootings_per_location <- shooting_df %>% group_by(LOCATION_DESC) %>% summarize(shooting_count = n()) %>% filter(LOCATION_DESC != "" & LOCATION_DESC != "(null)") 
+
+shootings_per_location$sum <- sum(shootings_per_location$shooting_count)
+
+shootings_per_location_top <- shootings_per_location %>% mutate(perc_shootings = round(shooting_count/sum * 100,3)) %>% arrange(-perc_shootings) %>% slice(1:5) %>% mutate(ranking = "worst")
+
+shootings_per_location_bottom  <- shootings_per_location %>% mutate(perc_shootings = round(shooting_count/sum * 100,3)) %>% arrange(perc_shootings) %>% slice(1:5) %>% mutate(ranking = "best")
+
+total_shootings_per_location <- rbind(shootings_per_location_top, shootings_per_location_bottom)
+
+shootings_per_location_final <- total_shootings_per_location[c(1,4,5)]
+
+
+#kable(shootings_per_location_final)
+shootings_per_location_final %>% filter(ranking =="worst") %>% ggplot(aes(x=LOCATION_DESC, y = perc_shootings, fill = LOCATION_DESC)) + 
+                                geom_bar(stat = "identity") +
+                                labs(title = "Percent of shootings per Location - Worst",
+                                     y = "Percent of Shootings",
+                                     x = "Location")  +
+                                theme(legend.position = "right", axis.text.x=element_blank())
+
+shootings_per_location_final %>% filter(ranking =="best") %>% ggplot(aes(x=LOCATION_DESC, y = perc_shootings, fill = LOCATION_DESC)) + 
+                                geom_bar(stat = "identity") + ylim(0,1) +
+                                labs(title = "Percent of shootings per Location - Best",
+                                     y = "Percent of Shootings",
+                                     x = "Location")  +
+                                theme(legend.position = "right", axis.text.x=element_blank())
+
+
+
+```
+
+So, back to the original question, where am I most likely to get shot if I am in New York City. Assuming I would like to stay alive, it would be in my best interest to stay out of Brooklyn and Bronx. Say I found myself in one of those locations, almost 70% of shootings happen in some type of dwellings, whether public or private. It would probably be a good idea to stay away from those. 
+
+So, lastly, let's take a look at some modelling. For my modelling, I would like to take a look at the amount of shootings that led to death by location. Basically, given that I am visiting a certain location and get shot, what are the odds that I end up dying. From there, I wanted to get a ranking of the absolute worst boroughs and places to visit where if I get shot, I will likely die. Completing this model, these are the 5 places with the highest predicted death, assuming I got shot. Here they are below.
+
+
+```{r shooting_deaths_per_date,  message = FALSE}
+shooting_df$death_flag <- ifelse(shooting_df$STATISTICAL_MURDER_FLAG == "true", 1, 0)
+
+
+shooting_df_location_model <- shooting_df %>% select(BORO, LOCATION_DESC, death_flag) %>% filter(LOCATION_DESC != "" & LOCATION_DESC != "(null)") 
+
+mod <- lm(death_flag ~ BORO + LOCATION_DESC, data = shooting_df_location_model)
+
+shooting_df_locations_pred <- shooting_df_location_model %>% mutate(predicted_death = round(predict(mod),2))
+
+shooting_df_locations_pred$lived <- ifelse(shooting_df_locations_pred$predicted_death <= 0.5, 1,0)
+
+shooting_df_locations_final <- shooting_df_locations_pred %>%  select(BORO, LOCATION_DESC, predicted_death) %>% distinct() %>% arrange(-predicted_death)
+
+shooting_death_frame <- shooting_df %>% group_by(BORO, LOCATION_DESC) %>% summarize(shootings = n(), deaths = sum(death_flag))%>% filter(LOCATION_DESC != "" & LOCATION_DESC != "(null)") 
+
+shooting_df_locations_final <- shooting_df_locations_final %>% left_join(shooting_death_frame, by = c("BORO", "LOCATION_DESC")) %>% filter(shootings > 100) %>% arrange(-predicted_death) 
+
+shooting_df_locations_final <- shooting_df_locations_final %>% unite("boro_location",
+                                                                     c(BORO, LOCATION_DESC),
+                                                                     sep = " ",
+                                                                     na.rm = TRUE,
+                                                                     remove = FALSE)
+
+
+
+shooting_df_locations_final %>% ggplot(aes(x=BORO, y = predicted_death)) + 
+                                geom_point(aes(size = shootings, color = LOCATION_DESC)) +
+                                labs(title = "Percent of shootings per Location",
+                                     y = "Death Prediction percentage",
+                                     x = "Location") 
+
+
+```
+
+Interestingly enough, there are some parallels between the places I am most likely to get shot and the places I am most likely to die if I get shot. Private and public housing still look like the main places to avoid. We also have some new places to avoid. It looks like the place with the highest death percentage is private housing in the Bronx. I also varied the size of the dots to indicate the number of shootings, as the more shootings there are, the better the model is going to be at predicting. I will include a summary of the model below. 
+
+```{r,  echo=FALSE, message = FALSE}
+
+summary(mod)
+
+```
+
+
+As you can see, the p-value for the model is actually very good at 2.2e-16. So location of the shooting is actually a very good indicator of whether or not you will die.
+
+
+# Data Question - When am I most likely to get shot in NYC?
+
+Alright. We talked about where I am most likely to get shot and die. Now I want to briefly look at the times that it I am most likely to get shot. Lets start by grouping our times into four categories; morning, afternoon, night, and late night. I will define morning as 6am - 12pm, afternoon as 12pm-6pm, night as 6pm-12am, and late night as 12am-6am.
+
+```{r time_analysis}
+
+shooting_df <- shooting_df %>% unite("date_time", c(OCCUR_DATE, OCCUR_TIME), sep = " ", na.rm = TRUE, remove = FALSE) %>%
+  mutate("hour" =  hour(date_time))
+
+hr_breaks = c(0, 6, 12, 18, 24)
+hr_labels <- c("Late Night", "Morning", "Afternoon", "Night")
+hr_labels_2 <- c(3,9,15,21)
+
+shooting_df$tod <- cut(shooting_df$hour, breaks = hr_breaks, labels = hr_labels, include.lowest = T, right = F)
+shooting_df$tod_cat <- cut(shooting_df$hour, breaks = hr_breaks, labels = hr_labels_2, include.lowest = T, right = F)
+
+shooting_df_time <- shooting_df %>% group_by(tod, BORO, hour) %>% summarize(shooting_count = n())
+
+shooting_df_time %>% ggplot(aes(x=hour, y = shooting_count, color = BORO)) + 
+                                geom_line() + 
+                                geom_point() +
+   labs(title = "Shooting Count per time category")
+
+shooting_df_time %>% ggplot(aes(fill= BORO, x=tod, y = shooting_count)) + 
+                                geom_bar(stat = "identity", position = "stack") + labs(title = "Shooting Count per time category")
+ 
+
+
+```
+
+Ok. Now we can see that, similar to what I would assume, the most likely time to get shot is at night, between 6pm-6am. The last thing I would like to look at is an additional model to see the death prediction as a function of both location and time. Can I take the location of the shooting and accurately predict the time that the shooting occurred? Model summary is shown below.
+
+```{r death_by_location_time}
+
+
+shooting_df_time_location <- shooting_df %>% group_by(tod_cat, BORO, LOCATION_DESC, death_flag) %>% summarize(shooting_count = n(), death_count = sum(death_flag))%>% filter(LOCATION_DESC != "" & LOCATION_DESC != "(null)")
+
+shooting_df_time_location$tod_cat <- as.numeric(as.character(shooting_df_time_location$tod_cat ))
+
+mod2 <- lm(tod_cat ~ BORO + LOCATION_DESC, data = shooting_df_time_location)
+
+summary(mod2)
+
+
+```
+
+Based on the P-value of the 2nd model above, 0.55, the answer to the question about predicting the time of the shooting based on location is no. There is no linear correlation between time of shooting and location of shooting. We need more information likely from additional sources. 
+
+
+# Conclusion
+
+This concludes my entry level analysis of this dataset. There are definitely more questions that can be explored and answered. I did not look at the race or age data, which of course are big demographic indicators. Much more work to be done and even a deeper dive into my current line of questioning. I would love to see survival analysis per borrough, which of course would involve some type of population counts. But summing up my analysis, I was able to get some great answers to my questions. Mainly, stay out of Brooklyn or Bronx housing at night. But there was some clear issues with my analysis. For example, all of this analysis was done on somewhat limited location data. Currently, only 58% of the shootings actually contain specific location data, which brings us into our talk about bias. Identifying bias is very important in any data analysis project. For this project, we really would need to look into why some of this location data is missing. Is it because only certain precincts record the location data? Or maybe because certain shooting locations are being withheld for whatever reason? Both of these scenarios would introduce bias into my data without me knowing. 
+
+In order to further investigate, I could also look at where exactly the location data is missing and see if it is equal across boroughs. Also, this data could be confirmed with other data sources to find some type of "truth". However, for entry level analysis, I will leave it here.
+
+```{r ending}
+sessionInfo()
+```
