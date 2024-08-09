@@ -5,7 +5,7 @@ date: "2024-07-25"
 output: html_document
 ---
 
-This project requires libraries tidyverse, lubiridate, knitr, and mapview to function properly.
+This project requires libraries tidyverse, lubridate, knitr, and mapview to function properly.
 
 This project will be a comprehensive summary of my entry level analysis of NYPD shooting data. This dataset describes all (that we know of) shootings in NYC going back from 2006 until 2023. Additional information including a data dictionary can be found at this website: https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic.
 
